@@ -44,13 +44,12 @@ def consultar_sii(RutPersona):
     with sync_playwright() as p:
 
         browser = p.chromium.launch(
-            headless=False,
+            headless=True,
             args=[
-                "--no-sandbox",
-                "--disable-infobars",
-                "--disable-notifications",
-                "--disable-popup-blocking",
-                "--window-position=-3000,-3000"
+            "--no-sandbox",
+            "--disable-infobars",
+            "--disable-notifications",
+            "--disable-popup-blocking"
             ]
         )
 
@@ -181,3 +180,4 @@ def consultar_sii(RutPersona):
 @app.post("/consultar-rut")
 def api_consultar_rut(req: RutRequest):
     return consultar_sii(req.rut)
+
