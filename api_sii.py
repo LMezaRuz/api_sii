@@ -3,16 +3,27 @@ import sys
 import glob
 import subprocess
 import time
-from datetime import datetime
 from fastapi import FastAPI
 from pydantic import BaseModel
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from datetime import datetime
 
+
+# ---------------------------
+# Entrada del request
+# ---------------------------
+class RutRequest(BaseModel):
+    rut: str
+
+
+# ---------------------------
+# Crear aplicación FastAPI
+# ---------------------------
 app = FastAPI()
 
 
 # -------------------------------------------------------
-# Verificar instalación de Playwright
+# Función para verificar e instalar navegadores Playwright
 # -------------------------------------------------------
 def ensure_playwright_browsers():
     chromium_path = os.path.expanduser("~\\AppData\\Local\\ms-playwright\\chromium-*")
@@ -23,93 +34,83 @@ def ensure_playwright_browsers():
         if os.path.exists(chrome_exe):
             return
 
-    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+    try:
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error al instalar Playwright: {e}")
+        sys.exit(1)
 
 
+# Instalar Playwright al iniciar el servidor
 ensure_playwright_browsers()
 
 
 # -------------------------------------------------------
-# MODELO DE ENTRADA PARA POSTMAN
+# ENDPOINT PRINCIPAL
 # -------------------------------------------------------
-class RutRequest(BaseModel):
-    rut: str
+@app.post("/consultar_rut")
+def consultar_rut(data: RutRequest):
 
-
-# -------------------------------------------------------
-# FUNCIÓN PRINCIPAL PARA CONSULTAR EL SII
-# -------------------------------------------------------
-def consultar_sii(RutPersona):
+    rutUsu = data.rut
 
     with sync_playwright() as p:
 
         browser = p.chromium.launch(
             headless=True,
             args=[
-            "--no-sandbox",
-            "--disable-infobars",
-            "--disable-notifications",
-            "--disable-popup-blocking"
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-infobars",
+                "--disable-notifications",
+                "--disable-extensions",
+                "--disable-popup-blocking",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--window-size=1920,1080"
             ]
         )
 
-        context = browser.new_context()
-        page = context.new_page()
-        page.goto("https://www2.sii.cl/stc/noauthz")
-
-        # ==== Ocultar ventana ====
-        session = context.new_cdp_session(page)
-        info = session.send("Browser.getWindowForTarget")
-        window_id = info["windowId"]
-        session.send(
-            "Browser.setWindowBounds",
-            {
-                "windowId": window_id,
-                "bounds": {
-                    "left": -3000,
-                    "top": -3000,
-                    "width": 1200,
-                    "height": 800
-                }
-            }
+        context = browser.new_context(
+            accept_downloads=True,
+            viewport={"width": 1920, "height": 1080},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            locale="es-CL"
         )
 
-        # ==============================
-        # INGRESAR RUT
-        # ==============================
+        page = context.new_page()
+
+        # Abrir portal
+        page.goto("https://www2.sii.cl/stc/noauthz", timeout=30000)
+
+        # ---------------------
+        # Ingresar RUT
         try:
             page.wait_for_selector("input.rut-form", timeout=20000)
-            page.click("input.rut-form")
-            page.fill("input.rut-form", RutPersona)
+            page.fill("input.rut-form", rutUsu)
         except:
             browser.close()
-            return {"error": "No se encontró el campo RUT"}
+            return {"error": "No se encontró el input del RUT en el SII."}
 
-        # ==============================
-        # CLIC EN CONSULTAR
-        # ==============================
+        # ---------------------
+        # Click en consultar
         try:
             page.wait_for_selector('input[value="Consultar Situación Tributaria"]', timeout=20000)
             page.click('input[value="Consultar Situación Tributaria"]')
         except:
             browser.close()
-            return {"error": "No se encontró el botón Consultar"}
+            return {"error": "No se encontró el botón Consultar."}
 
-        # ==============================
-        # VALIDAR MENSAJE DE ERROR
-        # ==============================
+        # ---------------------
+        # Buscar mensaje de error
         try:
             page.wait_for_selector("div.input-errors", timeout=5000)
-            msg = page.inner_text("div.input-errors")
-            if msg.strip() != "":
-                browser.close()
-                return {"error": msg}
-        except PlaywrightTimeoutError:
-            pass  # No hay error
+            mensaje_error = page.inner_text("div.input-errors")
+        except:
+            mensaje_error = ""
 
-        # ==============================
-        # OBTENER NOMBRE / RAZÓN SOCIAL
-        # ==============================
+        # ---------------------
+        # Nombre o razón social
         try:
             page.wait_for_selector("label.mb-1.font-body", timeout=5000)
             texto = page.inner_text("label.mb-1.font-body").strip()
@@ -117,67 +118,62 @@ def consultar_sii(RutPersona):
         except:
             nombre = ""
 
-        # ==============================
-        # DESPLEGAR TABLA
-        # ==============================
+        # ---------------------
+        # Abrir tabla
         try:
             page.wait_for_selector("button.open-btn", timeout=5000)
             page.click("button.open-btn")
         except:
             pass
 
-        # ==============================
-        # EXTRAER TABLA
-        # ==============================
+        # ---------------------
+        # Obtener tabla
         try:
-            page.wait_for_selector("table#DataTables_Table_0", timeout=15000)
+            page.wait_for_selector("table#DataTables_Table_0", timeout=10000)
             tabla = page.evaluate("""
-            () => {
-                const filas = [];
-                const tbody = document.querySelector("#DataTables_Table_0 tbody");
-                if (!tbody) return filas;
+                () => {
+                    const filas = [];
+                    const tbody = document.querySelector("#DataTables_Table_0 tbody");
+                    if (!tbody) return filas;
 
-                for (const tr of tbody.querySelectorAll("tr")) {
-                    const celdas = [...tr.querySelectorAll("td")].map(td => td.innerText.trim());
-                    filas.push(celdas);
+                    for (const tr of tbody.querySelectorAll("tr")) {
+                        const celdas = [...tr.querySelectorAll("td")].map(td => td.innerText.trim());
+                        filas.push(celdas);
+                    }
+                    return filas;
                 }
-                return filas;
-            }
             """)
         except:
             tabla = []
 
-        browser.close()
-
-        # ==============================
-        # BUSCAR LA FECHA MÁS RECIENTE
-        # ==============================
+        # ---------------------
+        # Buscar fila más reciente
         fila_mas_reciente = None
         fecha_mas_reciente = None
 
         for fila in tabla:
             try:
-                fecha_dt = datetime.strptime(fila[5], "%d-%m-%Y")
+                fecha_str = fila[5]
+                fecha_dt = datetime.strptime(fecha_str, "%d-%m-%Y")
                 if fecha_mas_reciente is None or fecha_dt > fecha_mas_reciente:
                     fecha_mas_reciente = fecha_dt
                     fila_mas_reciente = fila
             except:
                 continue
 
-        # Respuesta final
+        browser.close()
+
+        # -------------------------------------------------
+        # RETORNO DE LA API
+        # -------------------------------------------------
+
         return {
-            "rut": RutPersona,
+            "rut": rutUsu,
             "nombre": nombre,
-            "ultima_fila": fila_mas_reciente,
-            "tabla_completa": tabla
+            "mensaje_error": mensaje_error,
+            "registros_totales": len(tabla),
+            "fila_mas_reciente": fila_mas_reciente,
+            "tabla": tabla
         }
 
-
-
-# -------------------------------------------------------
-# ENDPOINT POST PARA POSTMAN
-# -------------------------------------------------------
-@app.post("/consultar-rut")
-def api_consultar_rut(req: RutRequest):
-    return consultar_sii(req.rut)
 
