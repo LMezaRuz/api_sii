@@ -175,5 +175,3 @@ def consultar_rut(data: RutRequest):
             "fila_mas_reciente": fila_mas_reciente,
             "tabla": tabla
         }
-
-
